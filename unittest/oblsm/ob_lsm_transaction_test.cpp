@@ -37,7 +37,7 @@ bool check_lsm_scan_result_by_value(ObLsmIterator* iter, const std::vector<std::
   return true;
 }
 
-TEST_F(ObLsmTransactionTest, DISABLED_oblsm_test_basic1)
+TEST_F(ObLsmTransactionTest, oblsm_test_basic1)
 { 
   db->put("key1", "value1");
   db->put("key2", "value2");

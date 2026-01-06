@@ -78,6 +78,14 @@ RC ObLsmImpl::recover()
 
   // Recover memtable from WAL file.
   wal_ = std::make_unique<WAL>();
+  vector<WalRecord> wal_records;
+  rc = wal_->recover(get_wal_path(new_memtable_record->memtable_id), wal_records);
+  if (rc == RC::SUCCESS) {
+    for (auto &record : wal_records) {
+      seq_ = std::max(record.seq + 1, seq_.load());
+      mem_table_->put(record.seq, record.key, record.val);
+    }
+  }
 
   // After recover from the old manifest file, write the snapshot into a new manifest file.
   if (!compaction_records.empty()) {
@@ -258,7 +266,24 @@ void ObLsmImpl::try_major_compaction()
       }
     }
   } else if (options_.type == CompactionType::LEVELED) {
-    // TODO: apply the compaction results to sstable
+    *new_sstables = *sstables_;
+    (*new_sstables)[picked->level()].clear();
+    (*new_sstables)[picked->level() + 1].clear();
+    for (int i = 0; i < 2; i++) {
+      for (auto old_sst : (*sstables_)[picked->level() + i]) {
+        if (!find_sstable(picked->inputs(i), old_sst)) {
+          (*new_sstables)[picked->level() + i].push_back(old_sst);
+        }
+      }
+    }
+    for (auto &new_sst : results) {
+      (*new_sstables)[picked->level() + 1].emplace_back(new_sst);
+    }
+    std::sort((*new_sstables)[picked->level() + 1].begin(),
+        (*new_sstables)[picked->level() + 1].end(),
+        [this](shared_ptr<ObSSTable> &a, shared_ptr<ObSSTable> &b) {
+          return internal_key_comparator_.compare(a->first_key(), b->first_key()) < 0;
+        });
   }
 
   sstables_ = new_sstables;
@@ -275,7 +300,24 @@ void ObLsmImpl::try_major_compaction()
   try_major_compaction();
 }
 
-vector<shared_ptr<ObSSTable>> ObLsmImpl::do_compaction(ObCompaction *picked) { return {}; }
+vector<shared_ptr<ObSSTable>> ObLsmImpl::do_compaction(ObCompaction *picked)
+{
+  auto memtable = make_shared<ObMemTable>();
+  for (int i = 0; i < 2; i++) {
+    for (auto &sst : picked->inputs(i)) {
+      auto iter = sst->new_iterator();
+      for (iter->seek_to_first(); iter->valid(); iter->next()) {
+        memtable->put(extract_sequence(iter->key()), extract_user_key(iter->key()), iter->value());
+      }
+      delete iter;
+    }
+  }
+  unique_ptr<ObSSTableBuilder> tb         = make_unique<ObSSTableBuilder>(&default_comparator_, block_cache_.get());
+  uint64_t                     sstable_id = sstable_id_.fetch_add(1);
+  RC                           rc         = tb->build(memtable, get_sstable_path(sstable_id), sstable_id);
+  ASSERT(OB_SUCC(rc), "OB_SUCC(rc)");
+  return {tb->get_built_table()};
+}
 
 void ObLsmImpl::build_sstable(shared_ptr<ObMemTable> imem)
 {

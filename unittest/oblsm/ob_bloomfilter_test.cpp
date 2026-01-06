@@ -15,13 +15,13 @@ See the Mulan PSL v2 for more details. */
 
 using namespace oceanbase;
 
-TEST(BloomfilterTest, DISABLED_ConstructorTest) {
+TEST(BloomfilterTest, ConstructorTest) {
     ObBloomfilter bf(4);
     EXPECT_TRUE(bf.empty());
     EXPECT_EQ(bf.object_count(), 0);
 }
 
-TEST(BloomfilterTest, DISABLED_InsertAndContainsTest) {
+TEST(BloomfilterTest, InsertAndContainsTest) {
     ObBloomfilter bf(4);
 
     bf.insert("database");
@@ -34,7 +34,7 @@ TEST(BloomfilterTest, DISABLED_InsertAndContainsTest) {
     EXPECT_EQ(bf.object_count(), 2);
 }
 
-TEST(BloomfilterTest, DISABLED_ClearTest) {
+TEST(BloomfilterTest, ClearTest) {
     ObBloomfilter bf(4);
 
     bf.insert("bloom");
@@ -47,7 +47,7 @@ TEST(BloomfilterTest, DISABLED_ClearTest) {
     EXPECT_EQ(bf.object_count(), 0);
 }
 
-TEST(BloomfilterTest, DISABLED_EmptyTest) {
+TEST(BloomfilterTest, EmptyTest) {
     ObBloomfilter bf(4);
 
     EXPECT_TRUE(bf.empty());
@@ -59,7 +59,7 @@ TEST(BloomfilterTest, DISABLED_EmptyTest) {
     EXPECT_TRUE(bf.empty());
 }
 
-TEST(BloomFilterTest, DISABLED_MultiThreadInsertTest) {
+TEST(BloomFilterTest, MultiThreadInsertTest) {
     ObBloomfilter bloom_filter;
     const size_t thread_count = 10;
     const size_t insertions_per_thread = 1000;

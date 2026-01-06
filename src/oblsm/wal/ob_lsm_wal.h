@@ -85,7 +85,12 @@ public:
    * @param filename The name of the WAL file to write logs.
    * @return `RC::SUCCESS` if the file was successfully opened, or an error code if it failed.
    */
-  RC open(const std::string &filename) { return RC::UNIMPLEMENTED; }
+  RC open(const std::string &filename)
+  {
+    filename_    = filename;
+    file_writer_ = make_unique<ObFileWriter>(filename, true);
+    return file_writer_->open_file();
+  }
 
   /**
    * @brief Recovers data from a specified WAL file.
@@ -117,11 +122,31 @@ public:
    *
    * @return `RC::SUCCESS` if the sync operation is successful, or an error code if it fails.
    */
-  RC sync() { return RC::UNIMPLEMENTED; }
+  RC sync()
+  {
+    if (filename_.empty()) {
+      return RC::SUCCESS;
+    }
+    ASSERT(file_writer_, "file_writer_");
+    RC rc = file_writer_->write(buffer_);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    rc = file_writer_->flush();
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    buffer_.clear();
+    return rc;
+  }
 
   const string &filename() const { return filename_; }
 
 private:
   string filename_;
+  unique_ptr<ObFileWriter> file_writer_;
+  std::string              buffer_;
+
+  static constexpr size_t MAX_LOG_BUFFER_SIZE = 4096;  // 4 kb
 };
 }  // namespace oceanbase
