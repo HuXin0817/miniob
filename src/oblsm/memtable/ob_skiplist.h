@@ -39,13 +39,17 @@ See the Mulan PSL v2 for more details. */
 #include "common/math/random_generator.h"
 #include "common/lang/atomic.h"
 #include "common/lang/vector.h"
+#include "common/lang/mutex.h"
 #include "common/log/log.h"
+#include "oblsm/util/ob_arena.h"
 
 namespace oceanbase {
 
 template <typename Key, class ObComparator>
 class ObSkipList
 {
+  friend class ObMemTable;
+
 private:
   struct Node;
 
@@ -161,6 +165,9 @@ private:
   // Immutable after construction
   ObComparator const compare_;
 
+  mutable mutex   mutex_;  // for arena_ malloc in `insert_concurrently`
+  mutable ObArena arena_;
+
   Node *const head_;
 
   // Modified only by insert().  Read racily by readers, but stale
@@ -224,7 +231,7 @@ private:
 template <typename Key, class ObComparator>
 typename ObSkipList<Key, ObComparator>::Node *ObSkipList<Key, ObComparator>::new_node(const Key &key, int height)
 {
-  char *const node_memory = reinterpret_cast<char *>(malloc(sizeof(Node) + sizeof(atomic<Node *>) * (height - 1)));
+  char *const node_memory = arena_.alloc(sizeof(Node) + sizeof(atomic<Node *>) * (height - 1));
   return new (node_memory) Node(key);
 }
 
@@ -306,8 +313,29 @@ template <typename Key, class ObComparator>
 typename ObSkipList<Key, ObComparator>::Node *ObSkipList<Key, ObComparator>::find_greater_or_equal(
     const Key &key, Node **prev) const
 {
-  // your code here
-  return nullptr;
+  Node *x     = head_;
+  int   level = get_max_height() - 1;
+  while (true) {
+    ASSERT(x == head_ || compare_(x->key, key) < 0, "x == head_ || compare_(x->key, key) < 0");
+    Node *next = x->next(level);
+    if (next == nullptr || compare_(next->key, key) >= 0) {
+      if (level == 0) {
+        if (prev) {
+          prev[0] = x;
+        }
+        return next;
+      } else {
+        if (prev) {
+          prev[level] = x;
+        }
+
+        // Switch to next list
+        level--;
+      }
+    } else {
+      x = next;
+    }
+  }
 }
 
 template <typename Key, class ObComparator>
@@ -368,20 +396,96 @@ ObSkipList<Key, ObComparator>::~ObSkipList()
   for (Node *x = head_; x != nullptr; x = x->next(0)) {
     nodes.push_back(x);
   }
-  for (auto node : nodes) {
-    node->~Node();
-    free(node);
-  }
 }
 
 template <typename Key, class ObComparator>
 void ObSkipList<Key, ObComparator>::insert(const Key &key)
-{}
+{
+  Node *prev[kMaxHeight];
+  Node *x = find_greater_or_equal(key, prev);
+
+  ASSERT(x == nullptr || x == head_ || compare_(x->key, key) >= 0, "x == nullptr || x == head_ || compare_(x->key, key) >= 0");
+
+  int height = random_height();
+  if (height > get_max_height()) {
+    for (int h = get_max_height(); h < height; h++) {
+      prev[h] = head_;
+    }
+
+    max_height_ = height;
+  }
+
+  Node *node = new_node(key, height);
+  for (int h = 0; h < height; h++) {
+    node->nobarrier_set_next(h, prev[h]->nobarrier_next(h));
+    prev[h]->nobarrier_set_next(h, node);
+  }
+}
 
 template <typename Key, class ObComparator>
 void ObSkipList<Key, ObComparator>::insert_concurrently(const Key &key)
 {
-  // your code here
+  while (true) {
+    Node *prev[kMaxHeight];
+    for (int i = 0; i < kMaxHeight; i++) {
+      prev[i] = head_;
+    }
+
+    Node *x = find_greater_or_equal(key, prev);
+
+    // If a node with the same key already exists (according to compare_),
+    // we may choose to skip insertion or perform an update.
+    if (x != nullptr && x != head_ && compare_(x->key, key) == 0) {
+      // duplicate keys are not allowed in the skip list.
+      return;
+    }
+
+    int height = random_height();
+    assert(height < kMaxHeight);
+
+    int old_max_height = max_height_.load(std::memory_order_relaxed);
+    if (height > old_max_height) {
+      // Attempt to CAS-update max_height_
+      if (!max_height_.compare_exchange_strong(old_max_height, height)) {
+        // CAS failed: another thread has already updated the height; retry.
+        continue;
+      }
+      // Successfully increased height: initialize prev for new levels to head_
+      for (int h = old_max_height; h < height; h++) {
+        prev[h] = head_;
+      }
+    }
+
+    Node *node;
+    {
+      std::lock_guard lock(mutex_);
+      node = new_node(key, height);
+    }
+
+    // Link the new node into the list from bottom to top using CAS
+    bool inserted = true;
+    for (int h = 0; h < height; h++) {
+      Node *expected = prev[h]->next(h);      // Current expected successor
+      node->nobarrier_set_next(h, expected);  // Pre-set the new node's next pointer
+
+      // Atomically attempt to change prev[h]->next(h) from 'expected' to 'node'
+      if (!prev[h]->cas_next(h, expected, node)) {
+        // CAS failed: prev[h]->next(h) was modified by another thread
+        inserted = false;
+        break;
+      }
+    }
+
+    if (inserted) {
+      // Successfully inserted!
+      return;
+    }
+
+    // Otherwise: insertion failed; retry is needed (note: 'node' will be leaked!)
+    // In a real implementation, memory reclamation must be handled
+    // (e.g., using hazard pointers, epoch-based GC, etc.).
+    // For simplicity, we just retry here (but this risks memory leaks).
+  }
 }
 
 template <typename Key, class ObComparator>

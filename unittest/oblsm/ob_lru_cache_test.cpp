@@ -33,7 +33,7 @@ protected:
   }
 };
 
-TEST_P(ObLRUCacheTest, DISABLED_lru_capacity) {
+TEST_P(ObLRUCacheTest, lru_capacity) {
   ASSERT_NE(cache, nullptr);
 
   for (size_t i = 0; i < capacity + 2; ++i) {
@@ -54,7 +54,7 @@ TEST_P(ObLRUCacheTest, DISABLED_lru_capacity) {
   }
 }
 
-TEST_P(ObLRUCacheTest, DISABLED_update_exist_key) {
+TEST_P(ObLRUCacheTest, update_exist_key) {
   ASSERT_NE(cache, nullptr);
 
   cache->put("key1", "value1");
@@ -70,7 +70,7 @@ TEST_P(ObLRUCacheTest, DISABLED_update_exist_key) {
   EXPECT_EQ(value, "value2");
 }
 
-TEST_P(ObLRUCacheTest, DISABLED_contains_key) {
+TEST_P(ObLRUCacheTest, contains_key) {
     ASSERT_NE(cache, nullptr);
 
     cache->put("key1", "value1");

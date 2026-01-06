@@ -31,11 +31,63 @@ unique_ptr<ObCompaction> TiredCompactionPicker::pick(SSTablesPtr sstables)
   return compaction;
 }
 
+vector<shared_ptr<ObSSTable>> LeveledCompactionPicker::find_overlap_tables(
+    const shared_ptr<ObSSTable> &target, const vector<shared_ptr<ObSSTable>> &tables)
+{
+  auto key_range_overlap = [this](const string &a_min, const string &a_max, const string &b_min, const string &b_max) {
+    return !(comp.compare(a_max, b_min) < 0 || comp.compare(b_max, a_min) < 0);
+  };
+
+  vector<shared_ptr<ObSSTable>> result;
+  for (auto &sst : tables) {
+    if (key_range_overlap(sst->first_key(), sst->last_key(), target->first_key(), target->last_key())) {
+      result.push_back(sst);
+    } else if (result.size()) {
+      break;
+    }
+  }
+  return result;
+}
+
+unique_ptr<ObCompaction> LeveledCompactionPicker::pick(SSTablesPtr sstables)
+{
+  size_t num_levels = sstables->size();
+
+  if ((*sstables)[0].size() >= options_->default_l0_file_num) {
+    unique_ptr<ObCompaction> compaction(new ObCompaction(0));
+    compaction->level_     = 0;
+    compaction->inputs_[0] = {(*sstables)[0][0]};
+    compaction->inputs_[1] = find_overlap_tables((*sstables)[0][0], (*sstables)[1]);
+    return compaction;
+  }
+
+  for (size_t level = 1; level < num_levels - 1; ++level) {
+    size_t total_size = 0;
+    for (const auto &sst : (*sstables)[level]) {
+      total_size += sst->size();
+    }
+
+    if (total_size >= max_byte(level)) {
+      if (!(*sstables)[level].empty()) {
+        const auto &select_sst = select_compaction_tables((*sstables)[level]);
+
+        unique_ptr<ObCompaction> compaction(new ObCompaction(level));
+        compaction->inputs_[0] = {select_sst};
+        compaction->inputs_[1] = find_overlap_tables(select_sst, (*sstables)[level + 1]);
+        return compaction;
+      }
+    }
+  }
+
+  return nullptr;
+}
+
 ObCompactionPicker *ObCompactionPicker::create(CompactionType type, ObLsmOptions *options)
 {
 
   switch (type) {
     case CompactionType::TIRED: return new TiredCompactionPicker(options);
+    case CompactionType::LEVELED: return new LeveledCompactionPicker(options);
     default: return nullptr;
   }
   return nullptr;

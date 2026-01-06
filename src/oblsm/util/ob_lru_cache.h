@@ -13,6 +13,10 @@ See the Mulan PSL v2 for more details. */
 #include <stdint.h>
 #include <cstddef>
 
+#include "src/common/lang/list.h"
+#include "src/common/lang/unordered_map.h"
+#include "src/common/lang/mutex.h"
+
 namespace oceanbase {
 
 /**
@@ -48,7 +52,20 @@ public:
    * @param value A reference to store the value associated with the key.
    * @return `true` if the key is found and the value is retrieved; `false` otherwise.
    */
-  bool get(const KeyType &key, ValueType &value) { return false; }
+  bool get(const KeyType &key, ValueType &value)
+  {
+    unique_lock lock(mutex_);
+
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+      return false;
+    }
+
+    // Move the accessed element to the front of the list (marking it as recently used)
+    lru.splice(lru.begin(), lru, it->second);
+    value = it->second->second;
+    return true;
+  }
 
   /**
    * @brief Inserts a key-value pair into the cache.
@@ -60,7 +77,32 @@ public:
    * @param key The key to insert into the cache.
    * @param value The value to associate with the specified key.
    */
-  void put(const KeyType &key, const ValueType &value) {}
+  void put(const KeyType &key, const ValueType &value)
+  {
+    if (capacity_ == 0) {
+      return;
+    }
+
+    unique_lock lock(mutex_);
+
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+      // Update the value and move it to the front
+      it->second->second = value;
+      lru.splice(lru.begin(), lru, it->second);
+    } else {
+      // Insert a new element
+      if (lru.size() >= capacity_) {
+        // Remove the least recently used item (at the back)
+        KeyType last_key = lru.back().first;
+        lru.pop_back();
+        cache.erase(last_key);
+      }
+      // Insert at the front
+      lru.emplace_front(key, value);
+      cache[key] = lru.begin();
+    }
+  }
 
   /**
    * @brief Checks whether the specified key exists in the cache.
@@ -68,13 +110,26 @@ public:
    * @param key The key to check in the cache.
    * @return `true` if the key exists; `false` otherwise.
    */
-  bool contains(const KeyType &key) const { return false; }
+  bool contains(const KeyType &key) const
+  {
+    std::shared_lock lock(mutex_);
+
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+      return false;
+    }
+    return true;
+  }
 
 private:
   /**
    * @brief The maximum number of elements the cache can hold.
    */
   size_t capacity_;
+
+  mutable shared_mutex                          mutex_;
+  list<pair<KeyType, ValueType>>                lru;
+  unordered_map<KeyType, decltype(lru.begin())> cache;
 };
 
 /**
@@ -91,7 +146,7 @@ private:
 template <typename Key, typename Value>
 ObLRUCache<Key, Value> *new_lru_cache(uint32_t capacity)
 {
-  return nullptr;
+  return new ObLRUCache<Key, Value>(capacity);
 }
 
 }  // namespace oceanbase

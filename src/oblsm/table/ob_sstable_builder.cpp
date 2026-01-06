@@ -16,7 +16,55 @@ namespace oceanbase {
 // TODO: refactor build with mem_table/iterator logic.
 RC ObSSTableBuilder::build(shared_ptr<ObMemTable> mem_table, const std::string &file_name, uint32_t sst_id)
 {
-  return RC::UNIMPLEMENTED;
+  file_writer_ = make_unique<ObFileWriter>(file_name);
+  if (RC rc = file_writer_->open_file(); OB_FAIL(rc)) {
+    return rc;
+  }
+
+  auto mem_table_iter = mem_table->new_iterator();
+  for (mem_table_iter->seek_to_first(); mem_table_iter->valid();) {
+    auto key = mem_table_iter->key();
+    ASSERT(!key.empty(), "!key.empty()");
+    if (curr_blk_first_key_.empty()) {
+      curr_blk_first_key_ = key;
+    }
+
+    if (RC rc = block_builder_.add(key, mem_table_iter->value()); rc == RC::FULL) {
+      finish_build_block();
+      curr_blk_first_key_.clear();
+    } else if (rc != RC::SUCCESS) {
+      // block_builder_ error
+      delete mem_table_iter;
+      reset();
+      return rc;
+    } else {
+      mem_table_iter->next();
+    }
+  }
+  delete mem_table_iter;
+
+  if (!curr_blk_first_key_.empty()) {
+    finish_build_block();
+    curr_blk_first_key_.clear();
+  }
+
+  string meta_contents;
+  put_numeric<uint32_t>(&meta_contents, block_metas_.size());
+  for (auto &meta : block_metas_) {
+    auto meta_content = meta.encode();
+    put_numeric<uint32_t>(&meta_contents, meta_content.size());
+    meta_contents.append(meta_content);
+  }
+
+  put_numeric<uint32_t>(&meta_contents, sst_id);
+  put_numeric<uint32_t>(&meta_contents, curr_offset_);
+  file_writer_->write(meta_contents);
+  curr_offset_ += meta_contents.size();
+
+  file_writer_->flush();
+  file_writer_->close_file();
+
+  return RC::SUCCESS;
 }
 
 void ObSSTableBuilder::finish_build_block()
