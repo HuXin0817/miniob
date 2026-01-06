@@ -480,11 +480,6 @@ void ObSkipList<Key, ObComparator>::insert_concurrently(const Key &key)
       // Successfully inserted!
       return;
     }
-
-    // Otherwise: insertion failed; retry is needed (note: 'node' will be leaked!)
-    // In a real implementation, memory reclamation must be handled
-    // (e.g., using hazard pointers, epoch-based GC, etc.).
-    // For simplicity, we just retry here (but this risks memory leaks).
   }
 }
 
